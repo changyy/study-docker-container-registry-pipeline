@@ -1,0 +1,32 @@
+services:
+  nginx:
+    build:
+      context: ..
+      dockerfile: ./docker/nginx/Dockerfile  # 修改這裡，從 context（專案根目錄）的角度指定路徑
+    environment:
+      - PHPFPM_HOST=${PHPFPM_HOST:-php-fpm}
+      - PHPFPM_PORT=${PHPFPM_PORT:-9000}
+    ports:
+      - "80:80"
+    #volumes:
+    #  - ../www:/var/www/html:cached
+    #  - ./nginx/templates:/etc/nginx/templates:ro
+    depends_on:
+      - php-fpm
+    networks:
+      - app-network
+
+  php-fpm:
+    build:
+      context: ..
+      dockerfile: ./docker/php-fpm/Dockerfile  # 修改這裡，從 context（專案根目錄）的角度指定路徑
+    #volumes:
+    #  - ../www:/var/www/html:cached
+    #  - ./php-fpm/php.ini:/usr/local/etc/php/conf.d/custom.ini:ro
+    #  - ./php-fpm/www.conf:/usr/local/etc/php-fpm.d/www.conf:ro
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge

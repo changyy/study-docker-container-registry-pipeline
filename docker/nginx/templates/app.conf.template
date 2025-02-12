@@ -1,0 +1,50 @@
+server {
+    listen 80;
+    server_name _;
+    root /var/www/html;
+    index index.php;
+
+    charset utf-8;
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    location = /favicon.ico { 
+        access_log off; 
+        log_not_found off; 
+    }
+
+    location = /robots.txt  { 
+        access_log off; 
+        log_not_found off; 
+    }
+
+    location /health {
+        access_log off;
+        return 200 'healthy\n';
+        add_header Content-Type text/plain;
+    }
+
+    # 處理 PHP 文件
+    location ~ \.php$ {
+        set $php_root /var/www/html/public;
+
+        fastcgi_pass ${PHPFPM_HOST}:${PHPFPM_PORT};
+        fastcgi_index index.php;
+        fastcgi_param DOCUMENT_ROOT $php_root;
+        fastcgi_param SCRIPT_FILENAME $php_root$fastcgi_script_name;
+        include fastcgi_params;
+    }
+
+    location ~ /\.(?!well-known).* {
+        deny all;
+    }
+
+    error_page 404 /index.php;
+
+    # 常用安全標頭
+    add_header X-Frame-Options "SAMEORIGIN";
+    add_header X-Content-Type-Options "nosniff";
+    add_header X-XSS-Protection "1; mode=block";
+}

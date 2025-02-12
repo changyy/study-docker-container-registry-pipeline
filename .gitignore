@@ -1,0 +1,10 @@
+*.swp
+venv/
+vendor/
+
+# Laravel framework
+storage/*.key
+storage/framework/cache/*
+storage/framework/sessions/*
+storage/framework/views/*
+storage/logs/*
