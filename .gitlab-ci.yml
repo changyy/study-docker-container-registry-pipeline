@@ -4,11 +4,14 @@ variables:
   DOCKER_TLS_CERTDIR: "/certs"
   PHP_IMAGE_PATH: "$CI_REGISTRY_IMAGE/$DOCKER_IMAGE_NAME_FOR_LARAVEL_PROJECT"
   NGINX_IMAGE_PATH: "$CI_REGISTRY_IMAGE/$DOCKER_IMAGE_NAME_FOR_NGINX"
+  ECS_CLUSTER: "myapp-cluster"
+  ECS_SERVICE: "myapp-service"
 
 stages:
   - prepare
   - build
   - cleanup
+  - deploy
 
 composer:
   stage: prepare
@@ -23,13 +26,8 @@ composer:
     - composer install --no-dev --optimize-autoloader
     #- php artisan optimize:clear
     - php artisan optimize
-  artifacts:
-    paths:
-      - www/
-    expire_in: 1 day
   rules:
-    - changes:
-        - www/**/*
+    #- if: $CI_COMMIT_TAG =~ /^app\-v\d+\.\d+\.\d+$/  # 符合版本號格式如 app-v1.2.3
     - if: '$CI_PIPELINE_SOURCE == "web"'
     - if: '$CI_PIPELINE_SOURCE == "api"'
 
@@ -42,18 +40,45 @@ npm:
     - cd www
     - npm install
     - npm run build
+  rules:
+    #- if: $CI_COMMIT_TAG =~ /^app\-v\d+\.\d+\.\d+$/  # 符合版本號格式如 app-v1.2.3
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "api"'
+      when: on_success
+
+web_docker_image_build:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  dependencies:
+    - composer
+    - npm
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" "$CI_REGISTRY" --password-stdin
+  script:
+    - TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+    - docker info
+    - docker build -t $DOCKER_IMAGE_NAME_FOR_NGINX:latest -f docker/nginx/Dockerfile .
+    - docker save $DOCKER_IMAGE_NAME_FOR_NGINX:latest > $DOCKER_IMAGE_NAME_FOR_NGINX.image.tar
+    - docker tag $DOCKER_IMAGE_NAME_FOR_NGINX:latest $NGINX_IMAGE_PATH:${TIMESTAMP}_${CI_COMMIT_SHA}
+    - docker tag $DOCKER_IMAGE_NAME_FOR_NGINX:latest $NGINX_IMAGE_PATH:latest
+    - docker push $NGINX_IMAGE_PATH:${TIMESTAMP}_${CI_COMMIT_SHA}
+    - docker push $NGINX_IMAGE_PATH:latest
   artifacts:
     paths:
-      - www/node_modules/
-      - www/public/build/
-    expire_in: 1 day
+      - $DOCKER_IMAGE_NAME_FOR_NGINX.image.tar
+    expire_in: 1 week
   rules:
-    - changes:
-        - www/**/*
+    - if: $CI_COMMIT_TAG =~ /^web\-v\d+\.\d+\.\d+$/  # 符合版本號格式如 web-v1.2.3
+      when: on_success
     - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: on_success
     - if: '$CI_PIPELINE_SOURCE == "api"'
+      when: on_success
 
-build:
+app_docker_image_build:
   stage: build
   image: docker:latest
   services:
@@ -67,30 +92,22 @@ build:
     - TIMESTAMP=$(date +%Y%m%d_%H%M%S)
     - docker info
     - docker build -t $DOCKER_IMAGE_NAME_FOR_LARAVEL_PROJECT:latest -f docker/php-fpm/Dockerfile .
-    - docker build -t $DOCKER_IMAGE_NAME_FOR_NGINX:latest -f docker/nginx/Dockerfile .
     - docker save $DOCKER_IMAGE_NAME_FOR_LARAVEL_PROJECT:latest > $DOCKER_IMAGE_NAME_FOR_LARAVEL_PROJECT.image.tar
-    - docker save $DOCKER_IMAGE_NAME_FOR_NGINX:latest > $DOCKER_IMAGE_NAME_FOR_NGINX.image.tar
     - docker tag $DOCKER_IMAGE_NAME_FOR_LARAVEL_PROJECT:latest $PHP_IMAGE_PATH:${TIMESTAMP}_${CI_COMMIT_SHA}
     - docker tag $DOCKER_IMAGE_NAME_FOR_LARAVEL_PROJECT:latest $PHP_IMAGE_PATH:latest
-    - docker tag $DOCKER_IMAGE_NAME_FOR_NGINX:latest $NGINX_IMAGE_PATH:${TIMESTAMP}_${CI_COMMIT_SHA}
-    - docker tag $DOCKER_IMAGE_NAME_FOR_NGINX:latest $NGINX_IMAGE_PATH:latest
     - docker push $PHP_IMAGE_PATH:${TIMESTAMP}_${CI_COMMIT_SHA}
     - docker push $PHP_IMAGE_PATH:latest
-    - docker push $NGINX_IMAGE_PATH:${TIMESTAMP}_${CI_COMMIT_SHA}
-    - docker push $NGINX_IMAGE_PATH:latest
   artifacts:
     paths:
       - $DOCKER_IMAGE_NAME_FOR_LARAVEL_PROJECT.image.tar
-      - $DOCKER_IMAGE_NAME_FOR_NGINX.image.tar
     expire_in: 1 week
   rules:
-    - changes:
-        - Dockerfile
-        - docker/**/*
-        - www/**/*  # 加入 www 目錄的變更觸發
+    - if: $CI_COMMIT_TAG =~ /^app\-v\d+\.\d+\.\d+$/  # 符合版本號格式如 app-v1.2.3
+      when: on_success
     - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: on_success
     - if: '$CI_PIPELINE_SOURCE == "api"'
-
+      when: on_success
 
 cleanup_images:
   stage: cleanup
@@ -121,5 +138,41 @@ cleanup_images:
         done
       done
   rules:
-    - when: on_success
+    - if: $CI_COMMIT_TAG =~ /^web\-v\d+\.\d+\.\d+$/  # 符合版本號格式如 web-v1.2.3
+      when: on_success
+    - if: $CI_COMMIT_TAG =~ /^app\-v\d+\.\d+\.\d+$/  # 符合版本號格式如 app-v1.2.3
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "api"'
+      when: on_success
 
+deploy_to_ecs:
+  stage: deploy
+  image: alpine:latest
+  needs:
+    - job: web_docker_image_build
+      optional: true
+    - job: app_docker_image_build
+      optional: true
+  before_script:
+    - apk add --no-cache aws-cli curl jq tree bash
+    - echo "AWS_ACCESS_KEY_ID = ${AWS_ACCESS_KEY_ID}"
+    - echo "AWS_SECRET_ACCESS_KEY = ${AWS_SECRET_ACCESS_KEY}"
+    - echo "AWS_DEFAULT_REGION = ${AWS_DEFAULT_REGION}"
+    - echo "ECS_DEPLOY_ENABLE = ${ECS_DEPLOY_ENABLE}" 
+    - echo "ECS_CLUSTER = ${ECS_CLUSTER}" 
+    - echo "ECS_SERVICE = ${ECS_SERVICE}" 
+  script:
+    - chmod +x tool/aws/ecs-update-service.sh
+    - bash tool/aws/ecs-update-service.sh
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^web\-v\d+\.\d+\.\d+$/
+      when: on_success
+    - if: $CI_COMMIT_TAG =~ /^app\-v\d+\.\d+\.\d+$/ 
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "api"'
+      when: on_success
+ 
