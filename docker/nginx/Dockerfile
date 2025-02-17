@@ -17,5 +17,10 @@ RUN chmod +x /docker-entrypoint.sh
 COPY docker/nginx/healthcheck.sh /usr/local/bin/healthcheck.sh
 RUN chmod 777 /usr/local/bin/healthcheck.sh
 
+WORKDIR /var/www/html
+COPY www/public/ .
+#RUN chown -R www-data:www-data /var/www/html
+RUN chown -R nginx:nginx /var/www/html
+
 ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["nginx", "-g", "daemon off;"]
